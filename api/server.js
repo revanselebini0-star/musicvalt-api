@@ -8,28 +8,51 @@ export default async function handler(req, res) {
 
   const { q, id } = req.query;
 
-  try {
-    const PIPED_API = "https://pipedapi.kavin.rocks";
+  // Daftar instance Piped API cadangan jika yang utama down
+  const PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.leptons.xyz",
+    "https://piped-api.privacy.com.de"
+  ];
 
-    // FITUR 1: Pencarian lagu resmi dari YouTube Music (?q=judul_lagu)
+  let searchData = null;
+  let streamData = null;
+
+  try {
+    // FITUR 1: Pencarian Lagu
     if (q) {
-      // Menambahkan keyword agar memprioritaskan rilisan resmi (Topic)
       const searchQuery = `${q} Topic Official Audio`;
-      const searchRes = await fetch(`${PIPED_API}/search?q=${encodeURIComponent(searchQuery)}&filter=music_songs`);
-      const searchData = await searchRes.json();
+      
+      // Coba beberapa instance sampai berhasil
+      for (const instance of PIPED_INSTANCES) {
+        try {
+          const searchRes = await fetch(`${instance}/search?q=${encodeURIComponent(searchQuery)}&filter=music_songs`);
+          const textResponse = await searchRes.text();
+          
+          // Pastikan response berupa JSON yang valid (bukan HTML error/Cloudflare)
+          if (textResponse.startsWith('{') || textResponse.startsWith('[')) {
+            searchData = JSON.parse(textResponse);
+            break; // Berhasil, keluar dari loop
+          }
+        } catch (err) {
+          continue; // Coba instance berikutnya jika gagal
+        }
+      }
+
+      if (!searchData) {
+        return res.status(500).json({ error: "Gagal mengambil data dari server musik. Coba lagi nanti." });
+      }
 
       const officialTracks = (searchData.items || [])
         .filter(item => item.type === 'stream')
         .map(item => {
-          // Membersihkan string " - Topic" pada nama artist
           const cleanArtist = item.uploaderName ? item.uploaderName.replace(' - Topic', '') : 'Unknown Artist';
-          
           return {
-            id: item.url.replace('/watch?v=', ''),
-            title: item.title,
+            id: item.url ? item.url.replace('/watch?v=', '') : '',
+            title: item.title || 'Unknown Title',
             artist: cleanArtist,
-            thumbnail: item.thumbnail,
-            duration: item.duration,
+            thumbnail: item.thumbnail || '',
+            duration: item.duration || 0,
             isOfficial: item.uploaderName?.includes('Topic') || item.uploaderVerified
           };
         });
@@ -37,20 +60,35 @@ export default async function handler(req, res) {
       return res.status(200).json(officialTracks);
     }
 
-    // FITUR 2: Ambil Direct Audio Stream Full & Cover HD (?id=video_id)
+    // FITUR 2: Ambil Direct Audio Stream & Cover HD
     if (id) {
-      const streamRes = await fetch(`${PIPED_API}/streams/${id}`);
-      const streamData = await streamRes.json();
-      
+      for (const instance of PIPED_INSTANCES) {
+        try {
+          const streamRes = await fetch(`${instance}/streams/${id}`);
+          const textResponse = await streamRes.text();
+
+          if (textResponse.startsWith('{') || textResponse.startsWith('[')) {
+            streamData = JSON.parse(textResponse);
+            break;
+          }
+        } catch (err) {
+          continue;
+        }
+      }
+
+      if (!streamData) {
+        return res.status(500).json({ error: "Gagal mengambil stream audio." });
+      }
+
       const audioStreams = streamData.audioStreams || [];
       const bestAudio = audioStreams.find(s => s.mimeType?.includes('audio/mp4')) || audioStreams[0];
 
       return res.status(200).json({
         id: id,
-        title: streamData.title,
+        title: streamData.title || '',
         artist: streamData.uploader ? streamData.uploader.replace(' - Topic', '') : '',
-        coverUrl: streamData.thumbnailUrl,
-        duration: streamData.duration,
+        coverUrl: streamData.thumbnailUrl || '',
+        duration: streamData.duration || 0,
         audioUrl: bestAudio ? bestAudio.url : null
       });
     }
@@ -58,6 +96,6 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Gunakan parameter ?q= untuk mencari atau ?id= untuk memutar lagu." });
 
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: "Terjadi kesalahan internal: " + error.message });
   }
 }
